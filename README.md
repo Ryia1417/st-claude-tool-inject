@@ -10,6 +10,7 @@
 
 ## 功能
 
+- **两种注入时机**：默认在**请求真正发出前**改写请求体，排在所有前端脚本之后，`noass` / `mergeEditor` 这类合并脚本改不到（详见"与合并类脚本的冲突"）。
 - **任意位置注入**：深度（倒数第 N 条）/ 绝对索引 / 最后一条 user 之前 / 最后一条 user 之后，均可再加偏移。
 - **多条规则**：每条规则独立开关、独立位置，支持复制、导入 / 导出 JSON。
 - **完全自定义**：工具名、工具描述、参数 JSON Schema、调用参数 `input`、返回结果 `content`。参数与结果支持 `{{char}}` `{{user}}` 等 ST 宏。
@@ -56,14 +57,56 @@ public/scripts/extensions/third-party/st-claude-tool-inject/
 
 ---
 
+## 与合并类脚本的冲突（noass / mergeEditor 等）
+
+如果你在用把整段对话压成单条消息的脚本（俗称 noass、"合并配置"、mergeEditor 等），**默认设置已经处理好了**；下面是原因，遇到问题时可以照着排查。
+
+### 冲突是怎么发生的
+
+这类脚本挂在 `CHAT_COMPLETION_SETTINGS_READY` 上（通常还用 `eventMakeLast` 把自己排到最后），而 SillyTavern 的事件顺序是：
+
+```
+CHAT_COMPLETION_PROMPT_READY   ← 本扩展原来的注入点
+        ↓
+CHAT_COMPLETION_SETTINGS_READY ← 合并脚本在这里工作     openai.js:3052
+        ↓
+fetch('/api/backends/chat-completions/generate')        openai.js:3055
+```
+
+它们的处理逻辑是：不带 `<|no-trans|>` 标记的消息全部丢进一个 merge block，最后用
+`{ role: merge_target_role, content: 拼接出来的大字符串 }` 替换掉 —— **`tool_calls` 和 `tool_call_id` 这两个字段被直接丢弃**。
+
+更麻烦的是，加 `<|no-trans|>` 标记也救不了：走"保留"分支时它同样只重建 `{ role, content, name }`，工具字段照样没了；而我们注入的 assistant 消息 `content` 是空串，标记被剥掉后内容为空，整条消息会被跳过。
+
+结果就是一次工具调用退化成两段普通文本：
+
+```js
+{ role: 'assistant', content: [ { type: 'text', text: '收到任务，让我先查看一下当前的故事有关设定：' } ] },
+{ role: 'user',      content: [ { type: 'text', text: 'tool: Readed.\n\n请继续构思剧情' } ] }
+```
+
+### 解决办法
+
+把**注入时机**设为 **`请求发出前`**（v1.2.0 起是默认值）。此时注入发生在 `fetch` 的 body 序列化之前、`CHAT_COMPLETION_SETTINGS_READY` 之后，合并脚本已经跑完，插进去的消息不会再被任何前端脚本碰到。
+
+配套的 **`自动补全 tools`**（默认开启）解决第二个坑：合并脚本工作时请求体里可能压根没有 `tools`，服务端就会走降级分支把工具块压成文本。开启后，扩展会在发出前补上自己的工具声明（并把 `tool_choice` 置为 `auto` —— 服务端会写成 `{ type: request.body.tool_choice }`，留空会发出非法的 `{ type: undefined }`）。
+
+### 副作用与取舍
+
+- 位置是按**合并之后**的消息数组解析的。合并脚本通常只剩 2～3 条消息，所以 `深度 0`（插在最后）基本就是你要的效果；具体落点用「请求检查器 → 消息位置图」看，那里显示的就是最终数组。
+- 注入内容对其它扩展不可见（它们的钩子都在更早的位置）。需要让别的脚本也能处理这两条消息时，才改回 `CHAT_COMPLETION_PROMPT_READY`。
+- 如果合并脚本把整块内容变成了 `role: 'assistant'`，我们注入的 assistant（`tool_use`）会和它合并成同一个 assistant turn，`tool_use` 落在该 turn 末尾 —— 这是合法的 Claude 结构，不影响使用。
+
+---
+
 ## 注意事项（重要）
 
-1. **必须开启函数调用，否则会被降级。**
+1. **必须开启函数调用，否则会被降级。**（用「请求发出前」+「自动补全 tools」时此项可不管）
    SillyTavern 服务端的判断是 `useTools = Array.isArray(body.tools) && body.tools.length > 0`。
    当 `useTools` 为 `false` 时，`convertClaudeMessages()` 会把所有 `tool_use` / `tool_result` 块**改写成纯 `text` 块** —— 注入还在，但不再是工具调用记录了。
    所以请保持「声明为可调用工具」开启，并在 ST 里勾选 `Enable function calling`。状态面板会直接告诉你当前是否安全。
 
-2. **以下情况 ST 不会注册工具**，因此同样会触发降级：
+2. **以下情况 ST 不会注册工具**，因此同样会触发降级（`自动补全 tools` 可以兜住）：
    - 开启了多轮 swipe（multi-swipe）；
    - 生成类型为 `impersonate` / `quiet` / `continue`；
    - `custom_prompt_post_processing` 不在 none / merge_tools / semi_tools / strict_tools 之列。

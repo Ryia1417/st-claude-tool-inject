@@ -45,10 +45,29 @@ const POSITION_MODES = {
     after_last_user: '最后一条 user 消息之后',
 };
 
+/**
+ * 注入时机。
+ *
+ * request（默认）：在 openai.js:3055 那次 fetch 真正发出前改写 body。
+ *   CHAT_COMPLETION_SETTINGS_READY 在 3052 行 emit，因此**所有**前端后处理脚本
+ *   （noass / mergeEditor 等合并脚本、酒馆助手脚本）都已经跑完，注入内容不会再被它们改写。
+ *
+ * prompt：在 CHAT_COMPLETION_PROMPT_READY 注入，走 ST 的正常管线，
+ *   其它扩展 / 脚本还能看到并处理这两条消息 —— 也正因如此会被合并类脚本吃掉。
+ */
+const INJECT_STAGES = {
+    request: '请求发出前（最后一道，兼容 noass 等合并脚本）',
+    prompt: 'CHAT_COMPLETION_PROMPT_READY（走正常管线，会被合并脚本改写）',
+};
+
 const DEFAULT_SETTINGS = {
     enabled: true,
     /** 'st' = 走 ST 的 OpenAI 中间格式（兼容性最好）；'native' = 直接塞原生 Claude block */
     injectFormat: 'st',
+    /** 'request' | 'prompt'，见 INJECT_STAGES */
+    injectStage: 'request',
+    /** request 阶段：若请求体里没有 tools，就补上本扩展声明的工具，避免服务端把工具块降级成纯文本 */
+    ensureTools: true,
     /** 限定 chat_completion_source，逗号分隔，留空 = 全部来源 */
     sources: 'claude,vertexai,custom',
     /** 跳过 dryRun（token 预算试算）阶段 */
@@ -162,6 +181,7 @@ function getSettings() {
             settings[key] = typeof value === 'object' && value !== null ? structuredClone(value) : value;
         }
     }
+    if (!Object.hasOwn(INJECT_STAGES, settings.injectStage)) settings.injectStage = 'request';
     if (!Array.isArray(settings.rules)) settings.rules = [];
     settings.rules.forEach(normalizeRule);
     return settings;
@@ -328,10 +348,10 @@ function activeRules() {
     });
 }
 
-function sourceAllowed() {
+function sourceAllowed(sourceOverride) {
     const raw = String(getSettings().sources || '').trim();
     if (!raw) return true;
-    const current = String(ctx().chatCompletionSettings?.chat_completion_source || '').toLowerCase();
+    const current = String(sourceOverride ?? ctx().chatCompletionSettings?.chat_completion_source ?? '').toLowerCase();
     return raw.toLowerCase().split(',').map(part => part.trim()).filter(Boolean).includes(current);
 }
 
@@ -367,6 +387,7 @@ function applyRules(chat) {
     const report = {
         time: Date.now(),
         format: settings.injectFormat,
+        stage: settings.injectStage,
         before,
         after: chat.length,
         minIndex,
@@ -430,22 +451,84 @@ const snapshots = [];
 let pendingReport = null;
 let fetchHooked = false;
 
-function pushSnapshot(url, body) {
+function pushSnapshot(url, body, report) {
     snapshots.unshift({
         id: randomId(8),
         time: Date.now(),
         url,
         body,
-        report: pendingReport,
+        report: report ?? null,
     });
-    pendingReport = null;
     while (snapshots.length > MAX_SNAPSHOTS) snapshots.pop();
     if ($('#ctiu_snapshot').length) renderSnapshotList();
 }
 
 /**
- * 包一层 fetch，抓下发往 ST 后端生成接口的请求体。
- * 只读取 init.body（字符串），不碰响应流，因此不影响流式输出。
+ * 按 OpenAI 的 tools 形状声明本扩展的工具。
+ * 服务端 chat-completions.js 会 `.filter(t => t.type === 'function').map(t => t.function)`
+ * 再转成 Claude 的 `{name, description, input_schema}`。
+ */
+function buildToolDeclarations() {
+    const seen = new Set();
+    const tools = [];
+    for (const rule of getSettings().rules) {
+        if (!rule.enabled || !rule.declare) continue;
+        if (!TOOL_NAME_RE.test(String(rule.name || ''))) continue;
+        if (seen.has(rule.name)) continue;
+        seen.add(rule.name);
+        tools.push({
+            type: 'function',
+            function: {
+                name: rule.name,
+                description: rule.description || `Injected tool: ${rule.name}`,
+                parameters: parseSchema(rule),
+            },
+        });
+    }
+    return tools;
+}
+
+/**
+ * request 阶段的注入：直接改写即将发出的请求体。
+ * @returns {object|null} 注入报告
+ */
+function injectIntoRequestBody(body) {
+    const settings = getSettings();
+    if (settings.injectStage !== 'request') return null;
+    if (!settings.enabled) return null;
+    if (!Array.isArray(body?.messages)) return null;
+    if (!sourceAllowed(body.chat_completion_source)) {
+        debugLog('当前 API 来源不在限定列表内，跳过注入。');
+        return null;
+    }
+
+    const report = applyRules(body.messages);
+    if (!report) return null;
+
+    // 服务端的判断是 useTools = Array.isArray(body.tools) && body.tools.length > 0。
+    // ST 没注册工具时（函数调用关闭 / multi-swipe / impersonate 等）这里补一份，
+    // 否则 convertClaudeMessages 会把刚注入的 tool_use / tool_result 压成纯文本。
+    if (settings.ensureTools && !(Array.isArray(body.tools) && body.tools.length)) {
+        const tools = buildToolDeclarations();
+        if (tools.length) {
+            body.tools = tools;
+            // tool_choice 必须给值：服务端会写成 { type: request.body.tool_choice }，
+            // 留空会发出非法的 { type: undefined }。
+            if (!body.tool_choice) body.tool_choice = 'auto';
+            report.toolsInjected = tools.map(tool => tool.function.name);
+            debugLog('请求体缺少 tools，已补上：', report.toolsInjected);
+        }
+    }
+
+    return report;
+}
+
+/**
+ * 包一层 fetch：
+ *   - request 阶段在这里完成注入（此时 CHAT_COMPLETION_SETTINGS_READY 已经 emit 完，
+ *     noass / mergeEditor 之类的合并脚本都跑过了，不会再动我们插入的消息）；
+ *   - 顺带把最终发出的请求体存成快照。
+ * 只处理 init.body 字符串，不碰响应流，因此不影响流式输出。
  */
 function installFetchHook() {
     if (fetchHooked) return;
@@ -454,17 +537,25 @@ function installFetchHook() {
     const original = globalThis.fetch;
     globalThis.fetch = function (input, init) {
         try {
-            if (getSettings().captureRequests) {
-                const url = typeof input === 'string' ? input : (input?.url ?? '');
-                if (GENERATE_ENDPOINTS.some(endpoint => String(url).includes(endpoint))) {
-                    const raw = init?.body;
-                    if (typeof raw === 'string') {
-                        pushSnapshot(String(url), JSON.parse(raw));
-                    }
+            const url = String(typeof input === 'string' ? input : (input?.url ?? ''));
+            const raw = init?.body;
+            if (typeof raw === 'string' && GENERATE_ENDPOINTS.some(endpoint => url.includes(endpoint))) {
+                const body = JSON.parse(raw);
+                const report = injectIntoRequestBody(body);
+
+                if (report) {
+                    // 只有真正改动过才重新序列化，避免无谓地动 init。
+                    const patched = { ...init, body: JSON.stringify(body) };
+                    if (getSettings().captureRequests) pushSnapshot(url, body, report);
+                    pendingReport = null;
+                    return original.call(this, input, patched);
                 }
+
+                if (getSettings().captureRequests) pushSnapshot(url, body, pendingReport);
+                pendingReport = null;
             }
         } catch (error) {
-            console.warn(LOG, '抓取请求体失败：', error);
+            console.error(LOG, '请求钩子出错，本次请求按原样发出：', error);
         }
         return original.apply(this, arguments);
     };
@@ -624,7 +715,11 @@ function buildPositionMap(snapshot) {
     }
 
     const header = [
+        `注入时机：${INJECT_STAGES[report.stage] ?? report.stage ?? '(旧快照)'}`,
         `注入格式：${report.format}`,
+        report.toolsInjected?.length
+            ? `已自动补全 tools：${report.toolsInjected.join(', ')}`
+            : '未自动补全 tools（请求体本来就带 tools，或该选项已关闭）',
         `注入前消息数：${report.before} → 注入后：${report.after}（+${report.after - report.before}）`,
         `最小可插入下标：${report.minIndex}（保证注入的 assistant 不会成为第一条非 system 消息）`,
         '',
@@ -724,6 +819,7 @@ async function onChatCompletionPromptReady(eventData) {
     try {
         const settings = getSettings();
         if (!settings.enabled) return;
+        if (settings.injectStage !== 'prompt') return;
         if (settings.skipDryRun && eventData?.dryRun) return;
         if (!Array.isArray(eventData?.chat)) return;
         if (!sourceAllowed()) {
@@ -841,17 +937,28 @@ function renderStatus() {
         : false;
     const declaredCount = context.ToolManager?.tools?.length ?? 0;
     const inScope = sourceAllowed();
+    const stage = settings.injectStage;
+    const fallbackTools = buildToolDeclarations().length;
 
     const rows = [];
     rows.push(`<div><b>当前 API 来源：</b><code>${esc(source)}</code> ${inScope ? '<span class="ctiu-ok">（在限定范围内）</span>' : '<span class="ctiu-warn">（不在限定范围内，本扩展不会注入）</span>'}</div>`);
+    rows.push(`<div><b>注入时机：</b>${esc(INJECT_STAGES[stage] ?? stage)}</div>`);
     rows.push(`<div><b>ST 函数调用开关：</b>${functionCalling ? '<span class="ctiu-ok">已开启</span>' : '<span class="ctiu-bad">已关闭</span>'}</div>`);
     rows.push(`<div><b>当前来源支持工具调用：</b>${supported ? '<span class="ctiu-ok">是</span>' : '<span class="ctiu-bad">否</span>'}</div>`);
     rows.push(`<div><b>已注册工具总数：</b>${declaredCount}</div>`);
 
-    if (!functionCalling || !supported || declaredCount === 0) {
-        rows.push('<div class="ctiu-bad ctiu-status-note">⚠ 服务端 <code>useTools</code> 会是 false，SillyTavern 会把 tool_use / tool_result <b>降级成纯文本块</b>。请在「AI 回复设置」里勾选 <b>Enable function calling</b>，并保持至少一条规则的「声明为可调用工具」为开。</div>');
-    } else {
+    const stAlreadyOk = functionCalling && supported && declaredCount > 0;
+
+    if (stAlreadyOk) {
         rows.push('<div class="ctiu-ok ctiu-status-note">✓ 注入内容会以真正的 tool_use / tool_result 块发送。</div>');
+    } else if (stage === 'request' && settings.ensureTools && fallbackTools > 0) {
+        rows.push(`<div class="ctiu-ok ctiu-status-note">✓ ST 这边没注册工具，但「自动补全 tools」已开启，发出前会补上 ${fallbackTools} 个工具声明，工具块不会被降级。</div>`);
+    } else {
+        rows.push('<div class="ctiu-bad ctiu-status-note">⚠ 服务端 <code>useTools</code> 会是 false，SillyTavern 会把 tool_use / tool_result <b>降级成纯文本块</b>。请在「AI 回复设置」里勾选 <b>Enable function calling</b>，或把注入时机设为「请求发出前」并开启「自动补全 tools」。</div>');
+    }
+
+    if (stage === 'prompt') {
+        rows.push('<div class="ctiu-warn ctiu-status-note">注入时机为 <b>CHAT_COMPLETION_PROMPT_READY</b>：如果你在用 noass / mergeEditor 这类合并脚本（它们挂在更靠后的 <code>CHAT_COMPLETION_SETTINGS_READY</code> 上，且会丢弃 <code>tool_calls</code> / <code>tool_call_id</code>），注入的两条消息会被并进普通文本。遇到这种情况请切到「请求发出前」。</div>');
     }
 
     if (settings.injectFormat === 'native') {
@@ -980,8 +1087,10 @@ function renderAll() {
     $('#ctiu_debug').prop('checked', settings.debug);
     $('#ctiu_capture').prop('checked', settings.captureRequests);
     $('#ctiu_redact').prop('checked', settings.redactSecrets);
+    $('#ctiu_ensure_tools').prop('checked', settings.ensureTools);
     $('#ctiu_sources').val(settings.sources);
     $('#ctiu_format').val(settings.injectFormat);
+    $('#ctiu_stage').val(settings.injectStage);
     renderRules();
     renderSnapshotList();
 }
@@ -1010,13 +1119,26 @@ const SETTINGS_HTML = `
             </label>
 
             <label class="ctiu-field">
+                <span>注入时机 <small>用 noass / mergeEditor 等合并脚本时必须选「请求发出前」</small></span>
+                <select id="ctiu_stage" class="text_pole">
+                    <option value="request">请求发出前 —— 最后一道，任何前端脚本都改不到（推荐）</option>
+                    <option value="prompt">CHAT_COMPLETION_PROMPT_READY —— 走正常管线，会被合并脚本改写</option>
+                </select>
+            </label>
+
+            <label class="checkbox_label">
+                <input id="ctiu_ensure_tools" type="checkbox">
+                <span>自动补全 tools<small>（「请求发出前」专用：请求体里没有 tools 时补上本扩展的工具声明，防止工具块被降级成纯文本）</small></span>
+            </label>
+
+            <label class="ctiu-field">
                 <span>限定 API 来源 <small>逗号分隔，留空 = 不限制</small></span>
                 <input id="ctiu_sources" type="text" class="text_pole" placeholder="claude,vertexai,custom">
             </label>
 
             <label class="checkbox_label">
                 <input id="ctiu_skip_dryrun" type="checkbox">
-                <span>跳过 dryRun（token 试算）阶段</span>
+                <span>跳过 dryRun（token 试算）阶段<small>（仅「CHAT_COMPLETION_PROMPT_READY」时机有意义）</small></span>
             </label>
             <label class="checkbox_label">
                 <input id="ctiu_debug" type="checkbox">
@@ -1114,6 +1236,18 @@ function bindGlobalHandlers() {
         getSettings().injectFormat = String($(this).val() ?? 'st');
         save();
         renderRules();
+    });
+
+    $('#ctiu_stage').on('change', function () {
+        getSettings().injectStage = String($(this).val() ?? 'request');
+        save();
+        renderStatus();
+    });
+
+    $('#ctiu_ensure_tools').on('change', function () {
+        getSettings().ensureTools = $(this).prop('checked');
+        save();
+        renderStatus();
     });
 
     $('#ctiu_add').on('click', () => {
