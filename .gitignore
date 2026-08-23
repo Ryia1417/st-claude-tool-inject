@@ -1,0 +1,10 @@
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# 请求检查器导出的快照可能含有对话内容，不要提交
+claude-tool-inject-*.json

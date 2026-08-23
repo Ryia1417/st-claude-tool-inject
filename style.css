@@ -1,0 +1,190 @@
+.claude-tool-inject-settings .ctiu-status {
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-bottom: 10px;
+    font-size: calc(var(--mainFontSize) * 0.9);
+    line-height: 1.55;
+    background-color: var(--black30a);
+}
+
+.claude-tool-inject-settings .ctiu-status-note {
+    margin-top: 6px;
+}
+
+.claude-tool-inject-settings .ctiu-ok {
+    color: var(--golden, #8bc34a);
+}
+
+.claude-tool-inject-settings .ctiu-warn {
+    color: #e0a030;
+}
+
+.claude-tool-inject-settings .ctiu-bad {
+    color: var(--warning, #e05050);
+}
+
+.claude-tool-inject-settings .ctiu-input-bad {
+    border-color: var(--warning, #e05050) !important;
+}
+
+.claude-tool-inject-settings .ctiu-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+.claude-tool-inject-settings .ctiu-field > span {
+    font-size: calc(var(--mainFontSize) * 0.9);
+    opacity: 0.9;
+}
+
+.claude-tool-inject-settings .ctiu-field small {
+    opacity: 0.65;
+    font-size: calc(var(--mainFontSize) * 0.8);
+    margin-left: 4px;
+}
+
+.claude-tool-inject-settings .ctiu-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 10px;
+}
+
+@media (max-width: 800px) {
+    .claude-tool-inject-settings .ctiu-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.claude-tool-inject-settings .ctiu-inline {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.claude-tool-inject-settings .ctiu-inline .text_pole {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.claude-tool-inject-settings .ctiu-mono {
+    font-family: var(--monoFontFamily, monospace);
+    font-size: calc(var(--mainFontSize) * 0.85);
+    white-space: pre;
+    overflow-x: auto;
+}
+
+.claude-tool-inject-settings .ctiu-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 10px 0;
+}
+
+.claude-tool-inject-settings .ctiu-empty {
+    opacity: 0.6;
+    padding: 12px;
+    text-align: center;
+    border: 1px dashed var(--SmartThemeBorderColor);
+    border-radius: 8px;
+}
+
+.claude-tool-inject-settings .ctiu-rule {
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    margin-bottom: 8px;
+    background-color: var(--black30a);
+}
+
+.claude-tool-inject-settings .ctiu-rule-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+}
+
+.claude-tool-inject-settings .ctiu-head-toggle {
+    margin: 0;
+    flex: 0 0 auto;
+}
+
+.claude-tool-inject-settings .ctiu-rule-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    cursor: pointer;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.claude-tool-inject-settings .ctiu-rule-label {
+    font-weight: bold;
+}
+
+.claude-tool-inject-settings .ctiu-rule-title code {
+    font-size: calc(var(--mainFontSize) * 0.85);
+    opacity: 0.85;
+}
+
+.claude-tool-inject-settings .ctiu-rule-pos {
+    opacity: 0.6;
+    font-size: calc(var(--mainFontSize) * 0.8);
+}
+
+.claude-tool-inject-settings .ctiu-rule-actions {
+    display: flex;
+    gap: 4px;
+    flex: 0 0 auto;
+}
+
+.claude-tool-inject-settings .ctiu-rule-actions .menu_button {
+    margin: 0;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.claude-tool-inject-settings .ctiu-rule-body {
+    padding: 4px 10px 10px;
+    border-top: 1px solid var(--SmartThemeBorderColor);
+}
+
+.claude-tool-inject-settings .ctiu-checks {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 6px 0;
+}
+
+.claude-tool-inject-settings .ctiu-checks .checkbox_label small {
+    opacity: 0.6;
+    font-size: calc(var(--mainFontSize) * 0.8);
+}
+
+.claude-tool-inject-settings .ctiu-preview {
+    max-height: 340px;
+    overflow: auto;
+    padding: 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    background-color: var(--black50a);
+    font-family: var(--monoFontFamily, monospace);
+    font-size: calc(var(--mainFontSize) * 0.8);
+    white-space: pre;
+    margin-top: 6px;
+}
+
+.claude-tool-inject-settings .ctiu-section-title {
+    font-weight: bold;
+    margin: 4px 0 8px;
+}
+
+.claude-tool-inject-settings .ctiu-inspect {
+    max-height: 480px;
+}

@@ -1,0 +1,12 @@
+{
+    "display_name": "Claude 工具调用注入 (Tool Call Injector)",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "Ryia1417",
+    "version": "1.1.0",
+    "homePage": "https://github.com/Ryia1417/st-claude-tool-inject",
+    "auto_update": false
+}
