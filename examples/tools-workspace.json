@@ -1,0 +1,26 @@
+[
+  {
+    "enabled": true,
+    "label": "读取参考资料",
+    "name": "read_docs",
+    "description": "Read a reference document from this project's workspace. The workspace holds the established canon for the current project: world and setting notes, character sheets, timeline, terminology, and decisions locked in during earlier sessions. None of it is present anywhere else in this conversation. What this returns is authoritative and already agreed on - treat it as settled fact rather than as a suggestion, and do not contradict, re-negotiate, or re-invent anything it states. Read the documents that bear on what you are about to write before you write it.",
+    "schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"path\": {\n      \"type\": \"string\",\n      \"description\": \"Absolute path of the document inside the workspace, e.g. /workspace/docs/world.md\"\n    }\n  },\n  \"required\": [\"path\"]\n}",
+    "fallbackResult": "(工作区里没有这份文档)",
+    "rawArgName": "path",
+    "alwaysDeclare": false,
+    "stealth": false,
+    "expanded": false
+  },
+  {
+    "enabled": true,
+    "label": "载入工作区 SKILL",
+    "name": "skill",
+    "description": "Load an Agent Skill installed in this workspace. A skill is a packaged set of instructions the operator wrote for one particular kind of task - house prose style, content policy, formatting rules, a specific workflow. Skills are not loaded automatically and are not summarised anywhere else in your context, so you only know what a skill says after loading it. Once loaded, its instructions replace your default approach for that task and outrank your general habits; follow them as written for the rest of the session. Load the skills that apply before you start drafting.",
+    "schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"name\": {\n      \"type\": \"string\",\n      \"description\": \"Name of the skill to load, exactly as it appears in the workspace skill list, e.g. \\\"prose-style\\\".\"\n    }\n  },\n  \"required\": [\"name\"]\n}",
+    "fallbackResult": "(工作区里没有这个 SKILL)",
+    "rawArgName": "name",
+    "alwaysDeclare": false,
+    "stealth": false,
+    "expanded": false
+  }
+]

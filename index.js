@@ -1756,9 +1756,11 @@ const SETTINGS_HTML = `
                 <span>工具库 JSON</span>
                 <textarea id="ctiu_io_text" class="text_pole textarea_compact ctiu-mono" rows="8"></textarea>
                 <div class="ctiu-inline">
-                    <div id="ctiu_io_apply" class="menu_button">应用导入</div>
+                    <div id="ctiu_io_append" class="menu_button">追加导入</div>
+                    <div id="ctiu_io_replace" class="menu_button">覆盖导入</div>
                     <div id="ctiu_io_close" class="menu_button">关闭</div>
                 </div>
+                <small>追加导入：同名工具就地更新，其余加到工具库末尾，原有工具不动。覆盖导入：整个工具库替换成这份 JSON。</small>
             </div>
 
             <hr class="sysHR">
@@ -1826,6 +1828,41 @@ function makeReferenceTemplates() {
             fallbackResult: '(工作区是空的)',
         }),
     ];
+}
+
+/**
+ * 把导入的工具并进工具库。
+ *
+ * @param {object[]} incoming 导入的工具数组
+ * @param {'append'|'replace'} mode append = 同名就地更新、其余追加；replace = 整库替换
+ * @returns {{added: number, updated: number}}
+ */
+function mergeTools(incoming, mode) {
+    const settings = getSettings();
+    const prepared = incoming.map(tool => normalizeTool({ ...tool }));
+
+    if (mode === 'replace') {
+        settings.tools = prepared;
+        return { added: prepared.length, updated: 0 };
+    }
+
+    let added = 0;
+    let updated = 0;
+    for (const tool of prepared) {
+        // 工具名在上游报文里必须唯一，所以同名只能更新，不能真的追加两份。
+        const at = settings.tools.findIndex(existing => existing.name === tool.name);
+        if (at >= 0) {
+            tool.id = settings.tools[at].id;
+            settings.tools[at] = tool;
+            updated++;
+        } else {
+            // 换个新 id，免得两次导入同一份 JSON 撞 id。
+            if (settings.tools.some(existing => existing.id === tool.id)) tool.id = randomId(12);
+            settings.tools.push(tool);
+            added++;
+        }
+    }
+    return { added, updated };
 }
 
 function bindGlobalHandlers() {
@@ -1896,7 +1933,7 @@ function bindGlobalHandlers() {
     });
 
     $('#ctiu_add_template').on('click', () => {
-        getSettings().tools.push(...makeReferenceTemplates());
+        mergeTools(makeReferenceTemplates(), 'append');
         save();
         syncToolRegistrations();
         renderTools();
@@ -1916,20 +1953,32 @@ function bindGlobalHandlers() {
 
     $('#ctiu_io_close').on('click', () => $('#ctiu_io').hide());
 
-    $('#ctiu_io_apply').on('click', () => {
+    const applyImport = mode => {
         try {
-            const parsed = JSON.parse(String($('#ctiu_io_text').val() ?? ''));
-            if (!Array.isArray(parsed)) throw new Error('顶层必须是数组');
-            getSettings().tools = parsed.map(tool => normalizeTool({ ...tool, id: tool.id || randomId(12) }));
+            const raw = JSON.parse(String($('#ctiu_io_text').val() ?? ''));
+            // 导出的是数组，但也收 { tools: [...] } —— 分享出去的片段常带一层壳。
+            const parsed = Array.isArray(raw) ? raw : (Array.isArray(raw?.tools) ? raw.tools : null);
+            if (!parsed) throw new Error('顶层得是数组，或者是带 tools 数组的对象');
+            if (!parsed.length) throw new Error('这份 JSON 里一个工具都没有');
+
+            if (mode === 'replace' && getSettings().tools.length
+                && !confirm(`覆盖导入会丢掉现有的 ${getSettings().tools.length} 个工具，确定？`)) return;
+
+            const { added, updated } = mergeTools(parsed, mode);
             save();
             syncToolRegistrations();
             renderTools();
             $('#ctiu_io').hide();
-            toastr.success(`已导入 ${parsed.length} 个工具`);
+            toastr.success(mode === 'replace'
+                ? `已覆盖导入 ${added} 个工具`
+                : `已追加 ${added} 个工具${updated ? `，更新 ${updated} 个同名工具` : ''}`);
         } catch (error) {
             toastr.error(`导入失败：${error.message}`);
         }
-    });
+    };
+
+    $('#ctiu_io_append').on('click', () => applyImport('append'));
+    $('#ctiu_io_replace').on('click', () => applyImport('replace'));
 
     $('#ctiu_view_map').on('click', () => showInspector('map'));
     $('#ctiu_view_st').on('click', () => showInspector('st'));
@@ -2055,6 +2104,7 @@ export {
     scanMessages,
     collectRolePrefixNames,
     splitNarration,
+    mergeTools,
     assembleNodes,
     applyTags,
     simulateClaudeRequest,

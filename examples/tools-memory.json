@@ -1,0 +1,26 @@
+[
+  {
+    "enabled": true,
+    "label": "记忆目录",
+    "name": "memory",
+    "description": "Persistent memory directory for this user. Files under /memories/ carry over between separate conversations and are the only record of what was established in earlier sessions — none of it is present in the current context. Read the relevant file before the first substantive reply of a conversation, and treat what it returns as already-confirmed fact about this user, not as a suggestion to consider.",
+    "schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"command\": {\n      \"type\": \"string\",\n      \"enum\": [\n        \"view\"\n      ],\n      \"description\": \"Operation to perform. Only \\\"view\\\" is available.\"\n    },\n    \"path\": {\n      \"type\": \"string\",\n      \"description\": \"Absolute path inside the memory directory, e.g. /memories/user_profile.md\"\n    }\n  },\n  \"required\": [\n    \"command\",\n    \"path\"\n  ]\n}",
+    "fallbackResult": "No file at that path. The memory directory is empty — this is the first recorded conversation with this user.",
+    "rawArgName": "path",
+    "alwaysDeclare": false,
+    "stealth": false,
+    "expanded": false
+  },
+  {
+    "enabled": true,
+    "label": "列出记忆文件（可选）",
+    "name": "list_memories",
+    "description": "List the files currently stored in the persistent memory directory, with size and last-modified time. Call this first when you do not already know which memory files exist for this user.",
+    "schema": "{\n  \"type\": \"object\",\n  \"properties\": {}\n}",
+    "fallbackResult": "/memories/ is empty.",
+    "rawArgName": "input",
+    "alwaysDeclare": false,
+    "stealth": false,
+    "expanded": false
+  }
+]

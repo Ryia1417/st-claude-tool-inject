@@ -172,6 +172,66 @@ public/scripts/extensions/third-party/st-claude-tool-inject/
 
 ---
 
+## 现成的工具包
+
+`examples/` 下有两份可以直接粘进「导入工具库」的 JSON：
+
+| 文件 | 工具 | 用途 |
+|---|---|---|
+| `examples/tools-memory.json` | `memory`、`list_memories` | 长期记忆目录。开场先让模型「查一下这个用户是谁」。 |
+| `examples/tools-workspace.json` | `read_docs`、`skill` | 工作区参考资料 + 工作区 SKILL。动笔前先把设定和写作规范拉出来。 |
+
+两份可以叠着用 —— **导入是追加，不会清掉已有的工具**。
+
+### 导入是追加还是覆盖
+
+导入面板有两个按钮：
+
+- **追加导入**（常用）：同名工具**就地更新**，其余追加到工具库末尾，原有工具原样保留。
+  同一份 JSON 重复导入不会出现两份重名工具（工具名在上游报文里必须唯一）。
+- **覆盖导入**：整个工具库替换成这份 JSON，会先弹确认。
+
+「＋ 参考资料三件套」走的也是追加逻辑，点两下不会多出三个重名工具。
+
+### `read_docs` / `skill` 怎么用
+
+```
+[AI助手] 资料调用
+记起来了。动笔前把这次要用到的设定和写作规范拉出来。
+<tool_calls>
+<invoke name="read_docs">/workspace/docs/world.md</invoke>
+<invoke name="read_docs">/workspace/docs/characters.md</invoke>
+<invoke name="skill">prose-style</invoke>
+</tool_calls>
+
+[用户] 世界书       <tool_result name="read_docs">
+[用户] （世界书条目，随便多少条）
+[用户] 角色设定      <tool_result name="read_docs">
+[用户] （角色卡）
+[用户] SKILL 正文    <tool_result name="skill">
+[用户] （SKILL.md 全文）
+[用户] 收尾          </tool_result>
+```
+
+两个 `read_docs` 是同一个工具名的并行调用，两个同名区间**按出现顺序**配对，第一个区间给
+第一次调用。两个工具都设了「裸文本参数名」，所以 `<invoke name="skill">prose-style</invoke>`
+这种直接写值的形式就够了，不用写 JSON。
+
+SKILL 的返回内容建议连 YAML frontmatter 一起放，模型对这个形状有很强的先验：
+
+```
+---
+name: prose-style
+description: 这个项目的行文规范，动笔前必读
+---
+
+# 行文规范
+- 短句为主，一段不超过四行。
+- 禁止总结式收尾，场景结束就停。
+```
+
+---
+
 ## 与 noass / mergeEditor 的关系
 
 **不冲突，两种状态都能用。** 这正是改用文本标签的原因：合并脚本会把 `tool_calls` / `tool_call_id` 这些结构化字段丢掉，但它动不了文本里的标签。
