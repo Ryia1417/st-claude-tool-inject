@@ -188,3 +188,37 @@
 .claude-tool-inject-settings .ctiu-inspect {
     max-height: 480px;
 }
+
+.claude-tool-inject-settings .ctiu-hint {
+    font-size: calc(var(--mainFontSize) * 0.85);
+    opacity: 0.75;
+    margin: 6px 0 10px;
+    line-height: 1.5;
+}
+
+.claude-tool-inject-settings .ctiu-syntax {
+    margin-top: 6px;
+    padding: 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    background-color: var(--black50a);
+    white-space: pre;
+    overflow-x: auto;
+    opacity: 1;
+}
+
+.claude-tool-inject-settings .ctiu-sub-drawer {
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    padding: 4px 8px;
+    margin: 8px 0;
+}
+
+.claude-tool-inject-settings .ctiu-sub-drawer .inline-drawer-header {
+    font-size: calc(var(--mainFontSize) * 0.95);
+    margin: 0;
+}
+
+.claude-tool-inject-settings .ctiu-rules {
+    margin-top: 4px;
+}
