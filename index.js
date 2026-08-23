@@ -470,20 +470,104 @@ function rolePrefix(role, settings) {
     return settings.userPrefix || 'Human';
 }
 
+const EMPTY_PREFIX_NAMES = new Set();
+
+/** 行首「名字:」候选。要求冒号后面是空白或行尾，不然 "备注:见下" 这种也会被算进来。 */
+const PREFIX_SCAN_RE = /(^|\n)[^\S\n]*([^\n:]{1,24}):(?=[^\S\n]|$)/g;
+
+/** 纯 ASCII 短标签：Gray / user_1 / Char.A。中文正文永远匹配不上。 */
+const PREFIX_NAME_RE = /^[A-Za-z0-9_.-]{1,24}$/;
+
+/** 一个名字要被认定成角色前缀，至少得在整段对话里出现这么多次。 */
+const PREFIX_MIN_HITS = 3;
+
+/**
+ * 扫出整段对话里反复出现的「行首角色前缀」名字。
+ *
+ * noass 会给每条消息加 "Sophia: " / "Gray: " 前缀（noass脚本.txt:1665），这类名字在全文里
+ * 会出现几十次；而用户自己写的「让我来看看有关用户的记忆:」只会出现一次。用出现次数把两者
+ * 分开，才不会把正文当成前缀删掉。
+ */
+function collectRolePrefixNames(messages) {
+    const counts = new Map();
+    for (const message of messages || []) {
+        const content = typeof message?.content === 'string' ? message.content : '';
+        if (!content) continue;
+        PREFIX_SCAN_RE.lastIndex = 0;
+        let match;
+        while ((match = PREFIX_SCAN_RE.exec(content)) !== null) {
+            const name = match[2].trim();
+            if (name) counts.set(name, (counts.get(name) || 0) + 1);
+        }
+    }
+    const names = new Set();
+    for (const [name, count] of counts) if (count >= PREFIX_MIN_HITS) names.add(name);
+    return names;
+}
+
+function isRolePrefixName(name, prefixNames) {
+    const trimmed = String(name ?? '').trim();
+    if (!trimmed) return false;
+    if (prefixNames.has(trimmed)) return true;
+    // 兜底：对话很短、前缀只出现过一两次时，纯 ASCII 短标签仍然按前缀处理。
+    return PREFIX_NAME_RE.test(trimmed);
+}
+
+/** 行首的「名字: 」，用来把 noass 前缀从正文上摘下来。 */
+const LEAD_PREFIX_RE = /^[^\S\n]*([^\n:]{1,24}):[^\S\n]*/;
+
+/**
+ * 从一段文本的尾部切出「紧挨着调用块的那句旁白」。
+ *
+ * 典型输入（noass 合并后的一整块）：
+ *   Lee: 你好，TGD！
+ *
+ *   TGD: 用户热情地向我打招呼。让我来看看有关用户的记忆。
+ * 切成 head = "Lee: 你好，TGD！"、tail = "用户热情地向我打招呼。让我来看看有关用户的记忆。"。
+ * 整段都没有角色前缀时（noass 没开、旁白和调用块写在同一个 assistant 条目里），
+ * head 为空、tail 就是整段。
+ */
+function splitNarration(text, prefixNames) {
+    const lines = String(text ?? '').split('\n');
+    let start = 0;
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const match = lines[i].match(LEAD_PREFIX_RE);
+        if (match && isRolePrefixName(match[1], prefixNames)) {
+            start = i;
+            break;
+        }
+    }
+
+    const head = lines.slice(0, start).join('\n').trim();
+    let tail = lines.slice(start).join('\n');
+    const match = tail.match(LEAD_PREFIX_RE);
+    const prefix = match && isRolePrefixName(match[1], prefixNames) ? match[1].trim() : '';
+    if (prefix) tail = tail.slice(match[0].length);
+    return { head, tail: tail.trim(), prefix };
+}
+
 /**
  * 清洗被标签切出来的文本片段。
  *
- * noass 会给每条消息加 "Sophia: " / "Gray: " 前缀（noass脚本.txt:1665）。标签被切走后
- * 常常会在片段边缘剩下一个光秃秃的前缀，这里把它抹掉。
+ * 标签被切走后，片段边缘常常会剩下一个光秃秃的 noass 前缀（"Gray:"），这里把它抹掉。
+ * 但只抹「确认是角色前缀」的那种 —— 正文自己以冒号结尾（"让我看看记忆:"）必须原样保留。
  */
-function cleanChunk(text, settings) {
-    let out = String(text ?? '').trim();
-    if (!out) return '';
-    if (settings.stripRolePrefix) {
-        if (/^[^\n:]{1,40}:\s*$/.test(out)) return '';
-        out = out.replace(/\n[^\S\n]*[^\n:]{1,40}:[^\S\n]*$/, '').trim();
+function cleanChunk(text, settings, prefixNames = EMPTY_PREFIX_NAMES) {
+    const out = String(text ?? '').trim();
+    if (!out || !settings.stripRolePrefix) return out;
+
+    const whole = out.match(/^([^\n:]{1,40}):[^\S\n]*$/);
+    if (whole) {
+        if (!isRolePrefixName(whole[1], prefixNames)) return out;
+        debugLog('丢掉一段只剩角色前缀的片段：', out);
+        return '';
     }
-    return out;
+
+    return out.replace(/\n[^\S\n]*([^\n:]{1,40}):[^\S\n]*$/, (all, name) => {
+        if (!isRolePrefixName(name, prefixNames)) return all;
+        debugLog('抹掉片段末尾的角色前缀：', name);
+        return '';
+    }).trim();
 }
 
 /**
@@ -492,9 +576,9 @@ function cleanChunk(text, settings) {
  * 区间里只有一种 role（典型：一串 User 预设条目，或 noass 合并后的单条消息）→ 直接拼。
  * 混了多种 role（典型：聊天历史被放进区间）→ 按 `Human:` / `Assistant:` 标注谁说的。
  */
-function regionText(region, settings) {
+function regionText(region, settings, prefixNames) {
     const parts = region.parts
-        .map(part => ({ role: part.role, text: cleanChunk(part.text, settings) }))
+        .map(part => ({ role: part.role, text: cleanChunk(part.text, settings, prefixNames) }))
         .filter(part => part.text);
     if (!parts.length) return '';
     const roles = new Set(parts.map(part => part.role || 'user'));
@@ -502,13 +586,13 @@ function regionText(region, settings) {
     return parts.map(part => `${rolePrefix(part.role, settings)}: ${part.text}`).join('\n\n');
 }
 
-function isBlankNode(node, settings) {
-    if (node.type === 'text') return !cleanChunk(node.text, settings);
+function isBlankNode(node, settings, prefixNames) {
+    if (node.type === 'text') return !cleanChunk(node.text, settings, prefixNames);
     return false;
 }
 
 /** 找出「调用块 + 紧随其后的返回区间」构成的组，以及被夹在中间的违规节点。 */
-function groupNodes(nodes, settings) {
+function groupNodes(nodes, settings, prefixNames) {
     const groups = [];
     const consumed = new Set();
 
@@ -524,7 +608,7 @@ function groupNodes(nodes, settings) {
         for (let k = i + 1; k <= lastResult; k++) {
             consumed.add(k);
             if (nodes[k].type === 'result') group.results.push(nodes[k]);
-            else if (!isBlankNode(nodes[k], settings)) group.strays.push(nodes[k]);
+            else if (!isBlankNode(nodes[k], settings, prefixNames)) group.strays.push(nodes[k]);
         }
         consumed.add(i);
         groups.push(group);
@@ -574,8 +658,8 @@ function pairResults(group, settings, warnings, groupIndex) {
  * 第二遍：节点流 → ST 消息数组。
  * @returns {{messages: object[], groups: object[], warnings: string[], usedTools: Set<string>}}
  */
-function assembleNodes(nodes, settings, subst, warnings) {
-    const { groups, consumed } = groupNodes(nodes, settings);
+function assembleNodes(nodes, settings, subst, warnings, prefixNames = EMPTY_PREFIX_NAMES) {
+    const { groups, consumed } = groupNodes(nodes, settings, prefixNames);
     const groupStarts = new Map(groups.map(group => [group.start, group]));
     const firstGroupEnd = groups.length ? groups[0].end : Infinity;
     const lastGroupStart = groups.length ? groups[groups.length - 1].start : -Infinity;
@@ -584,18 +668,48 @@ function assembleNodes(nodes, settings, subst, warnings) {
     const report = [];
     const usedTools = new Set();
 
-    const emitPlain = (node, index) => {
+    /** 跳过空白节点，找下一个真正有内容的节点。 */
+    const nextMeaningful = from => {
+        for (let k = from + 1; k < nodes.length; k++) {
+            if (nodes[k].type === 'text' && isBlankNode(nodes[k], settings, prefixNames)) continue;
+            return k;
+        }
+        return -1;
+    };
+
+    const emitPlain = (node, index, allowNarration = true) => {
         if (node.type === 'opaque') {
             out.push(node.message);
             return;
         }
-        const text = cleanChunk(node.text, settings);
+        let text = cleanChunk(node.text, settings, prefixNames);
         if (!text) return;
+
         // 夹在两个调用块之间的散文本 = 「看完结果后的思考」，只能由 assistant 说。
         // 最后一个调用块之后的文本沿用原 role，避免在数组末尾形成 prefill（新模型会 400）。
         const between = index > firstGroupEnd && index < lastGroupStart;
-        const message = { role: between ? 'assistant' : (node.role || 'user'), content: text };
-        if (node.name && !between) message.name = node.name;
+        let role = between ? 'assistant' : (node.role || 'user');
+
+        // 紧挨着调用块前面的那段文字（「让我看看记忆……」）属于 assistant 那一轮：
+        // tool_use 必须待在 assistant 消息里，旁白也得跟它同一边，ST 的同角色合并
+        // （prompt-converters.js:340）才能把两条拼成 [text, tool_use]。
+        // noass 开着时整段对话被压成一条 user 消息，这里顺带把 "TGD: " 这种前缀摘掉。
+        if (allowNarration && !between && groupStarts.has(nextMeaningful(index))) {
+            const split = splitNarration(text, prefixNames);
+            if (split.tail) {
+                if (split.head) {
+                    const before = { role: node.role || 'user', content: split.head };
+                    if (node.name) before.name = node.name;
+                    out.push(before);
+                }
+                debugLog('调用块前的旁白归给 assistant：', split.tail.slice(0, 40));
+                text = split.tail;
+                role = 'assistant';
+            }
+        }
+
+        const message = { role, content: text };
+        if (node.name && role === (node.role || 'user')) message.name = node.name;
         out.push(message);
     };
 
@@ -614,7 +728,7 @@ function assembleNodes(nodes, settings, subst, warnings) {
             group.call.invokes.forEach((invoke, ii) => {
                 const region = assigned[ii];
                 const tool = findToolByName(settings, invoke.name);
-                let content = region ? regionText(region, settings) : '';
+                let content = region ? regionText(region, settings, prefixNames) : '';
                 let source = region ? 'region' : 'fallback';
 
                 if (!content) {
@@ -693,7 +807,7 @@ function assembleNodes(nodes, settings, subst, warnings) {
                 }
             }
 
-            for (const stray of group.strays) emitPlain(stray, group.end);
+            for (const stray of group.strays) emitPlain(stray, group.end, false);
 
             report.push({
                 index: groupIndex,
@@ -731,7 +845,11 @@ function applyTags(chat, settings, subst = value => value) {
     const scanned = scanMessages(chat, settings);
     if (!scanned.nodes.some(node => node.type === 'call')) return null;
 
-    const assembled = assembleNodes(scanned.nodes, settings, subst, scanned.warnings);
+    // 前缀名要在重建前、从完整对话里统计，样本越全判断越准。
+    const prefixNames = collectRolePrefixNames(chat);
+    if (prefixNames.size) debugLog('识别到的角色前缀：', [...prefixNames]);
+
+    const assembled = assembleNodes(scanned.nodes, settings, subst, scanned.warnings, prefixNames);
     const warnings = assembled.warnings;
 
     // 结构校验：这三条踩中任意一条 Claude 都会 400。
@@ -932,7 +1050,7 @@ function announceWarnings(report) {
     const settings = getSettings();
     if (!settings.warnOnFallback) return;
     const warnings = report?.warnings ?? [];
-    const signature = warnings.join(' ');
+    const signature = warnings.join('\u0000');
     if (!warnings.length) {
         lastWarningSignature = '';
         return;
@@ -1935,6 +2053,8 @@ export {
     normalizeTool,
     tagPatterns,
     scanMessages,
+    collectRolePrefixNames,
+    splitNarration,
     assembleNodes,
     applyTags,
     simulateClaudeRequest,
