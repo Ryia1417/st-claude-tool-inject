@@ -86,6 +86,8 @@ const DEFAULT_RULE = {
     label: '新规则',
     name: 'read_lorebook',
     description: '',
+    /** 工具调用前那条 assistant 消息的正文（思考 / 旁白）。留空 = 只发 tool_use，不带任何文字 */
+    preface: '',
     schema: '',
     input: '{}',
     result: '',
@@ -207,6 +209,7 @@ function makeLorebookTemplate() {
             },
             required: ['query'],
         }, null, 2),
+        preface: '在动笔之前，先确认一下这一场涉及的既定设定。',
         input: JSON.stringify({ query: '{{char}} 所在场景的相关设定' }, null, 2),
         result: '（在这里填写你希望模型"以为自己刚查到"的世界书内容）\n\n- 条目 1: ...\n- 条目 2: ...',
         posMode: 'depth',
@@ -250,18 +253,36 @@ function parseInputObject(rule) {
 }
 
 /**
- * 构造要插入的两条消息。
+ * 构造要插入的消息（2 ~ 3 条）。
+ *
+ * rule.preface 非空时，assistant 这一侧会带上一段正文，最终发到 Claude 的形状是
+ * `assistant: [{type:'text'}, {type:'tool_use'}]`。多条规则串起来就是
+ * 「说一句 → 调工具 → 看结果 → 再说一句 → 再调工具」的完整思考链。
+ *
+ * st 格式下**必须拆成两条 assistant 消息**，这不是风格问题：
+ *   - prompt-converters.js:192 —— assistant 带 tool_calls 时 message.content 会被
+ *     tool_use 数组**整体覆盖**，写在同一条消息里的文字会被静默丢掉；
+ *   - prompt-converters.js:340 —— 随后连续同角色消息的 content 数组按顺序合并。
+ * 所以「纯文字 assistant」+「纯 tool_calls assistant」合并出来，正好是想要的形状。
+ *
+ * native 格式没有这个限制，两个 block 放同一条消息即可。
+ *
  * @param {object} rule
  * @param {'st'|'native'} format
  * @returns {object[]}
  */
-function buildPair(rule, format) {
+function buildInjection(rule, format) {
     const input = substituteDeep(parseInputObject(rule));
     const result = ctx().substituteParams(String(rule.result ?? ''));
+    const preface = ctx().substituteParams(String(rule.preface ?? '')).trim();
     const callId = rule.callId || makeCallId();
 
     if (format === 'native') {
         // 原生 Claude block 直通：convertClaudeMessages 对未知 type 的 block 原样返回。
+        const blocks = [];
+        if (preface) blocks.push({ type: 'text', text: preface });
+        blocks.push({ type: 'tool_use', id: callId, name: rule.name, input });
+
         const toolResult = {
             type: 'tool_result',
             tool_use_id: callId,
@@ -269,34 +290,31 @@ function buildPair(rule, format) {
         };
         if (rule.isError) toolResult.is_error = true;
         return [
-            {
-                role: 'assistant',
-                content: [{ type: 'tool_use', id: callId, name: rule.name, input }],
-            },
-            {
-                role: 'user',
-                content: [toolResult],
-            },
+            { role: 'assistant', content: blocks },
+            { role: 'user', content: [toolResult] },
         ];
     }
 
     // ST 中间格式：由 convertClaudeMessages（Claude 源）或代理端（OpenAI 兼容源）负责转换。
-    return [
-        {
-            role: 'assistant',
-            content: '',
-            tool_calls: [{
-                id: callId,
-                type: 'function',
-                function: { name: rule.name, arguments: JSON.stringify(input) },
-            }],
-        },
-        {
-            role: 'tool',
-            tool_call_id: callId,
-            content: result,
-        },
-    ];
+    const messages = [];
+    if (preface) {
+        messages.push({ role: 'assistant', content: preface });
+    }
+    messages.push({
+        role: 'assistant',
+        content: '',
+        tool_calls: [{
+            id: callId,
+            type: 'function',
+            function: { name: rule.name, arguments: JSON.stringify(input) },
+        }],
+    });
+    messages.push({
+        role: 'tool',
+        tool_call_id: callId,
+        content: result,
+    });
+    return messages;
 }
 
 function lastIndexOfRole(chat, role) {
@@ -378,10 +396,9 @@ function applyRules(chat) {
 
     const injectedBy = new Map();
     for (const item of planned) {
-        const pair = buildPair(item.rule, settings.injectFormat);
-        injectedBy.set(pair[0], item.rule);
-        injectedBy.set(pair[1], item.rule);
-        chat.splice(item.at, 0, ...pair);
+        const messages = buildInjection(item.rule, settings.injectFormat);
+        for (const message of messages) injectedBy.set(message, item.rule);
+        chat.splice(item.at, 0, ...messages);
     }
 
     const report = {
@@ -403,6 +420,7 @@ function applyRules(chat) {
                 resolvedAt: item.at,
                 clamped: item.at !== item.raw,
                 callId: item.rule.callId,
+                hasPreface: Boolean(String(item.rule.preface ?? '').trim()),
             })),
         map: chat.map((message, index) => ({
             index,
@@ -728,6 +746,7 @@ function buildPositionMap(snapshot) {
             `  · [${item.resolvedAt}] ${item.name}  ←  ${POSITION_MODES[item.posMode] ?? item.posMode}` +
             `${item.posValue ? ` / 偏移 ${item.posValue}` : ''}` +
             `${item.clamped ? `（原本解析到 ${item.requestedAt}，已上推到最小可插入位）` : ''}` +
+            `${item.hasPreface ? ' · 含调用前正文（占 3 条消息）' : ''}` +
             `  (${item.label})`),
         '',
         '消息位置图（★ = 本扩展注入）：',
@@ -900,29 +919,31 @@ function syncToolRegistrations() {
 
 function previewJson(rule) {
     const settings = getSettings();
-    const pair = buildPair(rule, settings.injectFormat);
+    const built = buildInjection(rule, settings.injectFormat);
 
     if (settings.injectFormat === 'native') {
-        return JSON.stringify(pair, null, 2);
+        return JSON.stringify(built, null, 2);
     }
 
-    // 模拟 convertClaudeMessages 的转换结果，方便直观核对最终线上格式。
+    // 模拟 convertClaudeMessages 的转换 + 同角色合并，方便直观核对最终线上格式。
     const input = substituteDeep(parseInputObject(rule));
+    const preface = ctx().substituteParams(String(rule.preface ?? '')).trim();
+    const blocks = [];
+    if (preface) blocks.push({ type: 'text', text: preface });
+    blocks.push({ type: 'tool_use', id: rule.callId, name: rule.name, input });
+
     const converted = [
-        {
-            role: 'assistant',
-            content: [{ type: 'tool_use', id: rule.callId, name: rule.name, input }],
-        },
+        { role: 'assistant', content: blocks },
         {
             role: 'user',
             content: [{ type: 'tool_result', tool_use_id: rule.callId, content: ctx().substituteParams(String(rule.result ?? '')) }],
         },
     ];
     return [
-        '// ST 内部格式（实际写入 chat 数组的内容）',
-        JSON.stringify(pair, null, 2),
+        `// ST 内部格式（实际写入 chat 数组的 ${built.length} 条消息）`,
+        JSON.stringify(built, null, 2),
         '',
-        '// 经 convertClaudeMessages 转换后发往 Claude 的内容',
+        '// 经 convertClaudeMessages 转换 + 同角色合并后，发往 Claude 的内容',
         JSON.stringify(converted, null, 2),
     ].join('\n');
 }
@@ -1014,6 +1035,11 @@ function renderRule(rule) {
         <label class="ctiu-field">
             <span>工具描述 <small>会随工具声明一起进系统提示词，影响模型对这个"能力"的理解</small></span>
             <textarea class="text_pole textarea_compact" rows="2" data-field="description">${esc(rule.description)}</textarea>
+        </label>
+
+        <label class="ctiu-field">
+            <span>调用前的 assistant 正文 <small>模型「调用这个工具之前说的话」，支持 {{宏}}；留空则只发 tool_use。多条规则各写一句就串成「思考 → 调用 → 再思考 → 再调用」</small></span>
+            <textarea class="text_pole textarea_compact" rows="2" data-field="preface" placeholder="先确认一下这一场涉及的既定设定。">${esc(rule.preface)}</textarea>
         </label>
 
         <div class="ctiu-grid">

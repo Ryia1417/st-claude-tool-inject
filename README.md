@@ -14,6 +14,7 @@
 - **任意位置注入**：深度（倒数第 N 条）/ 绝对索引 / 最后一条 user 之前 / 最后一条 user 之后，均可再加偏移。
 - **多条规则**：每条规则独立开关、独立位置，支持复制、导入 / 导出 JSON。
 - **完全自定义**：工具名、工具描述、参数 JSON Schema、调用参数 `input`、返回结果 `content`。参数与结果支持 `{{char}}` `{{user}}` 等 ST 宏。
+- **调用前的 assistant 正文**：每条规则可以写一句「模型调用这个工具之前说的话」，多条规则串起来就是完整的 `思考 → 调用 → 看结果 → 再思考 → 再调用` 链（详见"构造多轮思考链"）。
 - **两种注入格式**
   - `st`（默认）：写入 ST 的中间格式（`assistant.tool_calls` + `role:'tool'`），由 ST 服务端的 `convertClaudeMessages()` 转成 Claude 块。兼容性最好，OpenAI 兼容代理也能用。
   - `native`：直接写入原生 Claude 内容块。**只有这个模式支持 `is_error: true`**（ST 的中间格式没有表达失败结果的字段）。仅适用于 Claude / Vertex 源。
@@ -54,6 +55,41 @@ public/scripts/extensions/third-party/st-claude-tool-inject/
 4. 位置保持默认（深度 0 = 插在对话最末尾），或按需调整。
 5. 点规则卡片上的 👁 预览，确认生成的 JSON 结构符合预期。
 6. 发一条消息，然后在「请求检查器」里点 **消息位置图** 核对注入位置。
+
+---
+
+## 构造多轮思考链
+
+每条规则的**「调用前的 assistant 正文」**字段，写的是模型在发起这次调用之前说的那句话。给链上每条规则各写一句，最终发到 Claude 的形状就是：
+
+```
+ 0  user       （对话正文）
+ 1  assistant  text("动笔前先确认设定。") + tool_use:search_worldbook
+ 2  user       tool_result
+ 3  assistant  text("设定对上了，再看看角色现在的状态。") + tool_use:get_character_state
+ 4  user       tool_result
+ 5  assistant  text("最后载入文风配置。") + tool_use:load_style_profile
+ 6  user       tool_result
+```
+
+留空则只发 `tool_use`，不带任何文字 —— 这也是真实调用里很常见的形状，按需选择。
+
+### 为什么 `st` 格式下会多出一条消息
+
+这不是实现偷懒，是绕开 SillyTavern 转换器的一个硬限制：
+
+- `src/prompt-converters.js:192` —— assistant 带 `tool_calls` 时，`message.content` 会被 `tool_use` 数组**整体覆盖**。写在同一条消息里的文字会被**静默丢掉**，不报错、不告警。
+- `src/prompt-converters.js:340` —— 紧接着，连续同角色的消息会按顺序把 `content` 数组合并。
+
+所以 `st` 格式下扩展会写入**两条 assistant 消息**（一条纯文字 + 一条纯 `tool_calls`），让转换器自己把它们合并成 `[text, tool_use]`。`native` 格式没有这个限制，两个 block 直接放同一条消息。
+
+规则卡片上的 👁 预览会同时给出「写入 chat 数组的原始消息」和「转换合并后发往 Claude 的内容」，可以直接对照。位置图里带正文的规则会标注 `含调用前正文（占 3 条消息）`。
+
+### 注意
+
+- 正文支持 `{{char}}` `{{user}}` 等 ST 宏，会在注入时展开。
+- 写成模型自己的口吻（"先确认一下…"），不要写成对模型的指示（"请你先确认…"）—— 后者读起来像用户插话，反而削弱效果。
+- 触发降级（`useTools=false`）时，正文和 `tool_use` 都会变成纯文本块，链条会退化成一段自言自语。降级判断见下方"注意事项"第 1 条。
 
 ---
 
