@@ -5,7 +5,7 @@
     "name": "list_workspace",
     "description": "List what is available in this project's workspace. The workspace is the project's own storage: it persists across conversations, and nothing in it is visible to you until you open it. Call this first, before deciding what else to read - it tells you which reference documents exist and which skills are installed. Open a document under docs/ with read_docs; load a skill under skills/ with skill.",
     "schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"path\": {\n      \"type\": \"string\",\n      \"description\": \"Directory to list. Defaults to the workspace root when omitted.\"\n    }\n  }\n}",
-    "fallbackResult": "/workspace/\n├── docs/     参考文档 —— 世界观、角色、时间线、术语，本项目已经定稿的设定\n└── skills/   写作 SKILL —— 行文规范、尺度政策、格式要求，动笔前需要载入",
+    "fallbackResult": "/workspace/\n├── docs/\n│   ├── settings.md      世界观、角色、术语 —— 本项目已经定稿的设定\n│   └── history.md       已写章节的剧情梗概\n└── skills/\n    └── 写作要求.md       行文规范，动笔前载入",
     "rawArgName": "path",
     "alwaysDeclare": false,
     "stealth": false,

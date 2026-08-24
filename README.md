@@ -205,24 +205,40 @@ public/scripts/extensions/third-party/st-claude-tool-inject/
 </tool_calls>
 
 [用户] 目录内容      <tool_result name="list_workspace">
-[用户] /workspace/
-       ├── docs/     参考文档
-       └── skills/   写作 SKILL
+[用户] （整棵树放在这一个条目里，见下）
 [用户] 收尾          </tool_result>          ← 这行不能省，见下
 
 [AI助手] 取内容
-有设定文档，也装了写作 SKILL。两样都拉出来。
+设定、剧情梗概、写作要求都在。全拉出来。
 <tool_calls>
-<invoke name="read_docs">/workspace/docs/world.md</invoke>
-<invoke name="skill">prose-style</invoke>
+<invoke name="read_docs">/workspace/docs/settings.md</invoke>
+<invoke name="read_docs">/workspace/docs/history.md</invoke>
+<invoke name="skill">写作要求</invoke>
 </tool_calls>
 ...
 ```
 
+目录树条目的正文（**整棵树必须放在同一个预设条目里** —— 跨条目会被空行拆开）：
+
+```
+/workspace/
+├── docs/
+│   ├── settings.md      世界观、角色、术语 —— 本项目已经定稿的设定
+│   └── history.md       已写章节的剧情梗概
+└── skills/
+    └── 写作要求.md       行文规范，动笔前载入
+```
+
+右边那列注释不是摆设：模型是靠它决定先读哪个的。缩进和 `│ ├ └` 会原样进 `tool_result`，
+插件只 trim 整段的首尾空白，不动行内缩进。
+
+文件名里有中文没问题 —— 受 `^[a-zA-Z0-9_-]{1,64}$` 约束的只有**工具名**，参数值随便写，
+`<invoke name="skill">写作要求</invoke>` 会变成 `{"name":"写作要求"}`。
+
 ⚠️ **两步链里，第一个区间必须显式写 `</tool_result>`。** 区间没闭合就会一路吃到下一个
 `<tool_calls>`，把中间那句「有设定文档，也装了写作 SKILL」当成返回内容吞掉。
 
-`list_workspace` 的**兜底结果**里已经预置了一份「docs/ + skills/」的目录树，所以你也可以
+`list_workspace` 的**兜底结果**里已经预置了上面这棵树，所以你也可以
 不写区间，只放调用块 —— 插件会自动用兜底结果填上：
 
 ```json
@@ -232,6 +248,10 @@ public/scripts/extensions/third-party/st-claude-tool-inject/
 ```
 
 这种写法每次请求都会弹一条「用了兜底结果」的提示，嫌吵就关掉设置里的**「解析出问题时弹提示」**。
+
+**noass 开着时的一个小瑕疵**：合并脚本会给每条消息加 `Lee: ` 前缀，目录树条目也不例外，
+结果第一行会变成 `Lee: /workspace/`。插件只清理片段**末尾**的残留前缀，不动区间内部的
+（聊天历史区间需要它们）。介意的话给这个条目单独打上 `<|no-trans|>`，noass 就不会碰它了。
 
 ### `read_docs` / `skill` 怎么用
 
