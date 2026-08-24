@@ -179,7 +179,7 @@ public/scripts/extensions/third-party/st-claude-tool-inject/
 | 文件 | 工具 | 用途 |
 |---|---|---|
 | `examples/tools-memory.json` | `memory`、`list_memories` | 长期记忆目录。开场先让模型「查一下这个用户是谁」。 |
-| `examples/tools-workspace.json` | `list_workspace`、`read_docs`、`skill` | 工作区。先列目录看有什么，再取参考文档和写作 SKILL。 |
+| `examples/tools-workspace.json` | `list_workspace`、`read_history`、`read_docs`、`skill` | 工作区。先列目录看有什么，再单独读剧情记录，最后取参考文档和写作 SKILL。 |
 
 两份可以叠着用 —— **导入是追加，不会清掉已有的工具**。
 
@@ -193,9 +193,10 @@ public/scripts/extensions/third-party/st-claude-tool-inject/
 
 「＋ 参考资料三件套」走的也是追加逻辑，点两下不会多出三个重名工具。
 
-### 工作区三件套怎么用
+### 工作区四件套怎么用
 
-`list_workspace` → `read_docs` / `skill`，两步链：先让模型「看见」工作区里有什么，再去取。
+`list_workspace` → `read_history` → `read_docs` / `skill`，三步链：先让模型「看见」工作区里有什么，
+再**单独**把剧情记录读一遍，最后才去补设定和写作规范。
 
 ```
 [AI助手] 列目录
@@ -208,11 +209,20 @@ public/scripts/extensions/third-party/st-claude-tool-inject/
 [用户] （整棵树放在这一个条目里，见下）
 [用户] 收尾          </tool_result>          ← 这行不能省，见下
 
-[AI助手] 取内容
-设定、剧情梗概、写作要求都在。全拉出来。
+[AI助手] 读剧情记录
+剧情记录优先，先把已经写过的部分对齐。
+<tool_calls>
+<invoke name="read_history">latest</invoke>
+</tool_calls>
+
+[用户] 剧情记录      <tool_result name="read_history">
+[用户] （已写正文的经过 + 当前停在哪，见下）
+[用户] 收尾          </tool_result>          ← 同样不能省
+
+[AI助手] 取参考
+知道写到哪了。再把设定和行文规范补上。
 <tool_calls>
 <invoke name="read_docs">/workspace/docs/settings.md</invoke>
-<invoke name="read_docs">/workspace/docs/history.md</invoke>
 <invoke name="skill">写作要求</invoke>
 </tool_calls>
 ...
@@ -222,12 +232,16 @@ public/scripts/extensions/third-party/st-claude-tool-inject/
 
 ```
 /workspace/
+├── history.md           ★ 已写正文的剧情记录 —— 续写前第一个读，用 read_history 打开
 ├── docs/
-│   ├── settings.md      世界观、角色、术语 —— 本项目已经定稿的设定
-│   └── history.md       已写章节的剧情梗概
+│   └── settings.md      世界观、角色、术语 —— 本项目已经定稿的设定
 └── skills/
     └── 写作要求.md       行文规范，动笔前载入
 ```
+
+`history.md` 摆在根目录、前面挂个 ★，是给模型看的**排序信号**：树里越靠前、注释越硬的条目，
+后面越容易被优先调用。实际位置无所谓 —— `read_history` 收的是 `range` 不是 `path`，
+你想把它塞回 `docs/` 也行，改这行注释就够了。
 
 右边那列注释不是摆设：模型是靠它决定先读哪个的。缩进和 `│ ├ └` 会原样进 `tool_result`，
 插件只 trim 整段的首尾空白，不动行内缩进。
@@ -243,8 +257,11 @@ public/scripts/extensions/third-party/st-claude-tool-inject/
 
 ```json
 {"type":"tool_result","tool_use_id":"toolu_…","content":"/workspace/
-├── docs/     参考文档 —— 世界观、角色、时间线、术语，本项目已经定稿的设定
-└── skills/   写作 SKILL —— 行文规范、尺度政策、格式要求，动笔前需要载入"}
+├── history.md           ★ 已写正文的剧情记录 —— 续写前第一个读，用 read_history 打开
+├── docs/
+│   └── settings.md      世界观、角色、术语 —— 本项目已经定稿的设定
+└── skills/
+    └── 写作要求.md       行文规范，动笔前载入"}
 ```
 
 这种写法每次请求都会弹一条「用了兜底结果」的提示，嫌吵就关掉设置里的**「解析出问题时弹提示」**。
@@ -252,6 +269,37 @@ public/scripts/extensions/third-party/st-claude-tool-inject/
 **noass 开着时的一个小瑕疵**：合并脚本会给每条消息加 `Lee: ` 前缀，目录树条目也不例外，
 结果第一行会变成 `Lee: /workspace/`。插件只清理片段**末尾**的残留前缀，不动区间内部的
 （聊天历史区间需要它们）。介意的话给这个条目单独打上 `<|no-trans|>`，noass 就不会碰它了。
+
+### `read_history` 为什么单独拆一个工具
+
+剧情记录和设定文档不是一类东西：设定说的是「世界怎么运作」，记录说的是「已经发生过什么」。
+混在 `read_docs` 里的话，模型经常只挑一个读，或者把两者当成同等分量的参考资料。拆开之后：
+
+- **工具描述里写死了优先级。** `read_history` 的 description 明确说它压过设定笔记、压过模型
+  自己对这轮对话的印象，两边冲突时以它为准 —— 因为它记的是已经写出去的正文，别的文档只是意图。
+  `read_docs` 的描述里也补了反向的一句，指回 `read_history`。
+- **单独一次调用，单独一个 `tool_result`。** 不跟设定、SKILL 挤在同一个 `user` 消息里，注意力不被稀释。
+- **工具声明顺序也是提示。** 导入后 `read_history` 排在 `read_docs` 前面，发往上游的 `tools`
+  数组按这个顺序走。
+
+参数 `range` 是可选的，裸文本参数名，`latest` / `all` / `ch12` 随你定义：
+
+```
+<invoke name="read_history">latest</invoke>     → {"range":"latest"}
+<invoke name="read_history"/>                   → {}
+```
+
+返回内容建议带上「当前停在哪」，这是模型最容易接不上的地方：
+
+```
+# 已写正文记录（截至第 14 章）
+
+第 12 章：蕾娜在码头捡到那枚徽章，没交给守夜人。
+第 13 章：钟楼守夜人失踪，徽章开始发烫。
+第 14 章：蕾娜决定夜里独自上钟楼。结尾停在她推开钟楼门的一瞬。
+
+当前状态：夜里，钟楼门口，蕾娜独自一人，徽章在口袋里发烫。
+```
 
 ### `read_docs` / `skill` 怎么用
 
