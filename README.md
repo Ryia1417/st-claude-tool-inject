@@ -179,7 +179,7 @@ public/scripts/extensions/third-party/st-claude-tool-inject/
 | 文件 | 工具 | 用途 |
 |---|---|---|
 | `examples/tools-memory.json` | `memory`、`list_memories` | 长期记忆目录。开场先让模型「查一下这个用户是谁」。 |
-| `examples/tools-workspace.json` | `read_docs`、`skill` | 工作区参考资料 + 工作区 SKILL。动笔前先把设定和写作规范拉出来。 |
+| `examples/tools-workspace.json` | `list_workspace`、`read_docs`、`skill` | 工作区。先列目录看有什么，再取参考文档和写作 SKILL。 |
 
 两份可以叠着用 —— **导入是追加，不会清掉已有的工具**。
 
@@ -192,6 +192,46 @@ public/scripts/extensions/third-party/st-claude-tool-inject/
 - **覆盖导入**：整个工具库替换成这份 JSON，会先弹确认。
 
 「＋ 参考资料三件套」走的也是追加逻辑，点两下不会多出三个重名工具。
+
+### 工作区三件套怎么用
+
+`list_workspace` → `read_docs` / `skill`，两步链：先让模型「看见」工作区里有什么，再去取。
+
+```
+[AI助手] 列目录
+先看看这个项目的工作区里有什么。
+<tool_calls>
+<invoke name="list_workspace"/>
+</tool_calls>
+
+[用户] 目录内容      <tool_result name="list_workspace">
+[用户] /workspace/
+       ├── docs/     参考文档
+       └── skills/   写作 SKILL
+[用户] 收尾          </tool_result>          ← 这行不能省，见下
+
+[AI助手] 取内容
+有设定文档，也装了写作 SKILL。两样都拉出来。
+<tool_calls>
+<invoke name="read_docs">/workspace/docs/world.md</invoke>
+<invoke name="skill">prose-style</invoke>
+</tool_calls>
+...
+```
+
+⚠️ **两步链里，第一个区间必须显式写 `</tool_result>`。** 区间没闭合就会一路吃到下一个
+`<tool_calls>`，把中间那句「有设定文档，也装了写作 SKILL」当成返回内容吞掉。
+
+`list_workspace` 的**兜底结果**里已经预置了一份「docs/ + skills/」的目录树，所以你也可以
+不写区间，只放调用块 —— 插件会自动用兜底结果填上：
+
+```json
+{"type":"tool_result","tool_use_id":"toolu_…","content":"/workspace/
+├── docs/     参考文档 —— 世界观、角色、时间线、术语，本项目已经定稿的设定
+└── skills/   写作 SKILL —— 行文规范、尺度政策、格式要求，动笔前需要载入"}
+```
+
+这种写法每次请求都会弹一条「用了兜底结果」的提示，嫌吵就关掉设置里的**「解析出问题时弹提示」**。
 
 ### `read_docs` / `skill` 怎么用
 

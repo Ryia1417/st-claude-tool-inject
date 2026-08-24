@@ -1,6 +1,18 @@
 [
   {
     "enabled": true,
+    "label": "列出工作区",
+    "name": "list_workspace",
+    "description": "List what is available in this project's workspace. The workspace is the project's own storage: it persists across conversations, and nothing in it is visible to you until you open it. Call this first, before deciding what else to read - it tells you which reference documents exist and which skills are installed. Open a document under docs/ with read_docs; load a skill under skills/ with skill.",
+    "schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"path\": {\n      \"type\": \"string\",\n      \"description\": \"Directory to list. Defaults to the workspace root when omitted.\"\n    }\n  }\n}",
+    "fallbackResult": "/workspace/\n├── docs/     参考文档 —— 世界观、角色、时间线、术语，本项目已经定稿的设定\n└── skills/   写作 SKILL —— 行文规范、尺度政策、格式要求，动笔前需要载入",
+    "rawArgName": "path",
+    "alwaysDeclare": false,
+    "stealth": false,
+    "expanded": false
+  },
+  {
+    "enabled": true,
     "label": "读取参考资料",
     "name": "read_docs",
     "description": "Read a reference document from this project's workspace. The workspace holds the established canon for the current project: world and setting notes, character sheets, timeline, terminology, and decisions locked in during earlier sessions. None of it is present anywhere else in this conversation. What this returns is authoritative and already agreed on - treat it as settled fact rather than as a suggestion, and do not contradict, re-negotiate, or re-invent anything it states. Read the documents that bear on what you are about to write before you write it.",
